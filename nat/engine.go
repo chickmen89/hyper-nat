@@ -1045,7 +1045,7 @@ func (e *Engine) UpdateRules(cfg *config.Config) error {
 func (e *Engine) GetConnections() []ConnectionInfo {
 	var conns []ConnectionInfo
 	now := time.Now()
-	
+
 	e.table.ForEach(func(entry *ConnTrackEntry) {
 		conns = append(conns, ConnectionInfo{
 			Protocol:     protoName(entry.Protocol),
@@ -1058,6 +1058,69 @@ func (e *Engine) GetConnections() []ConnectionInfo {
 			IdleSeconds:  int64(now.Sub(entry.LastSeen).Seconds()),
 		})
 	})
-	
+
 	return conns
+}
+
+// PortForwardInfo represents a port forwarding rule for status display.
+type PortForwardInfo struct {
+	Name         string
+	Protocol     string
+	ExternalPort uint16
+	InternalIP   string
+	InternalPort uint16
+}
+
+// GetPortForwardRules returns all port forwarding rules.
+func (e *Engine) GetPortForwardRules() []PortForwardInfo {
+	rules := e.dnatTable.GetRules()
+	result := make([]PortForwardInfo, 0, len(rules))
+
+	for _, rule := range rules {
+		result = append(result, PortForwardInfo{
+			Name:         rule.Name,
+			Protocol:     rule.Protocol,
+			ExternalPort: rule.ExternalPort,
+			InternalIP:   rule.InternalIP.String(),
+			InternalPort: rule.InternalPort,
+		})
+	}
+
+	return result
+}
+
+// DNATSessionInfo represents an active DNAT session for status display.
+type DNATSessionInfo struct {
+	Protocol     string
+	ExternalIP   string
+	ExternalPort uint16
+	InternalIP   string
+	InternalPort uint16
+	NATPort      uint16
+	IdleSeconds  int64
+}
+
+// GetDNATSessions returns all active DNAT sessions.
+func (e *Engine) GetDNATSessions() []DNATSessionInfo {
+	var sessions []DNATSessionInfo
+	now := time.Now()
+
+	e.dnatTable.ForEachSession(func(session *DNATSession) {
+		sessions = append(sessions, DNATSessionInfo{
+			Protocol:     protoName(session.Protocol),
+			ExternalIP:   session.ExternalIP.String(),
+			ExternalPort: session.ExternalPort,
+			InternalIP:   session.InternalIP.String(),
+			InternalPort: session.InternalPort,
+			NATPort:      session.NATPort,
+			IdleSeconds:  int64(now.Sub(session.LastSeen).Seconds()),
+		})
+	})
+
+	return sessions
+}
+
+// DNATSessionCount returns the number of active DNAT sessions.
+func (e *Engine) DNATSessionCount() int {
+	return e.dnatTable.SessionCount()
 }

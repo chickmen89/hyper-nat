@@ -229,3 +229,16 @@ func (t *DNATTable) GetRules() []*DNATEntry {
 	}
 	return rules
 }
+
+// ForEachSession iterates over unique sessions (avoiding duplicate reverse keys).
+func (t *DNATTable) ForEachSession(fn func(*DNATSession)) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	// Only iterate over forward keys (skip "rev:" prefixed keys)
+	for key, session := range t.sessions {
+		if len(key) < 4 || key[:4] != "rev:" {
+			fn(session)
+		}
+	}
+}

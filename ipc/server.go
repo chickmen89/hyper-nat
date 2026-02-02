@@ -31,6 +31,9 @@ type StatusResponse struct {
 	NATIP            string            `json:"nat_ip"`
 	InternalNetwork  string            `json:"internal_network"`
 	Connections      []ConnectionInfo  `json:"connections,omitempty"`
+	PortForwards     []PortForwardInfo `json:"port_forwards,omitempty"`
+	DNATSessions     []DNATSessionInfo `json:"dnat_sessions,omitempty"`
+	ActiveDNATConns  int               `json:"active_dnat_connections"`
 }
 
 // ConnectionInfo represents a single NAT connection.
@@ -44,6 +47,26 @@ type ConnectionInfo struct {
 	State        string    `json:"state"`
 	LastSeen     time.Time `json:"last_seen"`
 	IdleSeconds  int64     `json:"idle_seconds"`
+}
+
+// PortForwardInfo represents a port forwarding (DNAT) rule.
+type PortForwardInfo struct {
+	Name         string `json:"name"`
+	Protocol     string `json:"protocol"`
+	ExternalPort uint16 `json:"external_port"`
+	InternalIP   string `json:"internal_ip"`
+	InternalPort uint16 `json:"internal_port"`
+}
+
+// DNATSessionInfo represents an active DNAT session.
+type DNATSessionInfo struct {
+	Protocol     string `json:"protocol"`
+	ExternalIP   string `json:"external_ip"`
+	ExternalPort uint16 `json:"external_port"`
+	InternalIP   string `json:"internal_ip"`
+	InternalPort uint16 `json:"internal_port"`
+	NATPort      uint16 `json:"nat_port"`
+	IdleSeconds  int64  `json:"idle_seconds"`
 }
 
 // Request represents an IPC request.

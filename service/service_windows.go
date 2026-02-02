@@ -113,8 +113,10 @@ func (s *HyperNATService) Execute(args []string, r <-chan svc.ChangeRequest, cha
 			TotalConns:       total,
 			NATIP:            cfg.NATIP.String(),
 			InternalNetwork:  cfg.InternalNetwork.String(),
+			ActiveDNATConns:  s.engine.DNATSessionCount(),
 		}
 
+		// Add SNAT connection details
 		natConns := s.engine.GetConnections()
 		resp.Connections = make([]ipc.ConnectionInfo, len(natConns))
 		for i, c := range natConns {
@@ -129,6 +131,35 @@ func (s *HyperNATService) Execute(args []string, r <-chan svc.ChangeRequest, cha
 				IdleSeconds:  c.IdleSeconds,
 			}
 		}
+
+		// Add port forwarding rules
+		pfRules := s.engine.GetPortForwardRules()
+		resp.PortForwards = make([]ipc.PortForwardInfo, len(pfRules))
+		for i, r := range pfRules {
+			resp.PortForwards[i] = ipc.PortForwardInfo{
+				Name:         r.Name,
+				Protocol:     r.Protocol,
+				ExternalPort: r.ExternalPort,
+				InternalIP:   r.InternalIP,
+				InternalPort: r.InternalPort,
+			}
+		}
+
+		// Add DNAT sessions
+		dnatSessions := s.engine.GetDNATSessions()
+		resp.DNATSessions = make([]ipc.DNATSessionInfo, len(dnatSessions))
+		for i, sess := range dnatSessions {
+			resp.DNATSessions[i] = ipc.DNATSessionInfo{
+				Protocol:     sess.Protocol,
+				ExternalIP:   sess.ExternalIP,
+				ExternalPort: sess.ExternalPort,
+				InternalIP:   sess.InternalIP,
+				InternalPort: sess.InternalPort,
+				NATPort:      sess.NATPort,
+				IdleSeconds:  sess.IdleSeconds,
+			}
+		}
+
 		return resp
 	})
 

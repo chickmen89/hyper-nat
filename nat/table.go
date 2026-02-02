@@ -307,10 +307,14 @@ func (t *ConnTrackTable) CleanupExpired(tcpTimeout, udpTimeout, icmpTimeout time
 // CleanupExpiredWithEstablished removes entries older than the given duration.
 // For TCP CLOSED/TIME_WAIT: remove if older than tcpTimeout
 // For TCP ESTABLISHED: remove if older than tcpEstablishedTimeout (to prevent memory leaks)
+// For TCP half-open states (SYN_SENT, SYN_RECEIVED, FIN_WAIT, etc.): remove after 60 seconds
 // For UDP/ICMP: remove if older than respective timeout
 func (t *ConnTrackTable) CleanupExpiredWithEstablished(tcpTimeout, udpTimeout, icmpTimeout, tcpEstablishedTimeout time.Duration) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	// Short timeout for TCP half-open connections to prevent SYN flood resource exhaustion
+	const tcpHalfOpenTimeout = 60 * time.Second
 
 	now := time.Now()
 	toDelete := make([]*ConnTrackEntry, 0)
@@ -319,16 +323,22 @@ func (t *ConnTrackTable) CleanupExpiredWithEstablished(tcpTimeout, udpTimeout, i
 		var timeout time.Duration
 		switch entry.Protocol {
 		case ProtocolTCP:
-			// For TCP CLOSED/TIME_WAIT, use short timeout
-			if entry.State == StateClosed || entry.State == StateTimeWait {
+			switch entry.State {
+			case StateClosed, StateTimeWait:
+				// Use short timeout for closed/time_wait connections
 				timeout = tcpTimeout
-			} else if tcpEstablishedTimeout > 0 {
-				// For other TCP states (including ESTABLISHED), use longer timeout
-				// This prevents memory leaks from connections that never close properly
-				timeout = tcpEstablishedTimeout
-			} else {
-				// If no established timeout set, skip non-closed TCP connections
-				continue
+			case StateEstablished:
+				// Use long timeout for established connections
+				if tcpEstablishedTimeout > 0 {
+					timeout = tcpEstablishedTimeout
+				} else {
+					// If no established timeout set, skip established connections
+					continue
+				}
+			default:
+				// Half-open states: NEW, SYN_SENT, SYN_RECEIVED, FIN_WAIT1, FIN_WAIT2,
+				// CLOSE_WAIT, LAST_ACK - use short timeout to prevent resource exhaustion
+				timeout = tcpHalfOpenTimeout
 			}
 		case ProtocolICMP:
 			timeout = icmpTimeout

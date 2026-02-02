@@ -161,6 +161,7 @@ func runForeground(configPath, logFile string, verbose bool) {
 			TotalConns:       total,
 			NATIP:            cfg.NATIP.String(),
 			InternalNetwork:  cfg.InternalNetwork.String(),
+			ActiveDNATConns:  engine.DNATSessionCount(),
 		}
 
 		// Add connection details (convert from nat.ConnectionInfo to ipc.ConnectionInfo)
@@ -178,6 +179,35 @@ func runForeground(configPath, logFile string, verbose bool) {
 				IdleSeconds:  c.IdleSeconds,
 			}
 		}
+
+		// Add port forwarding rules
+		pfRules := engine.GetPortForwardRules()
+		resp.PortForwards = make([]ipc.PortForwardInfo, len(pfRules))
+		for i, r := range pfRules {
+			resp.PortForwards[i] = ipc.PortForwardInfo{
+				Name:         r.Name,
+				Protocol:     r.Protocol,
+				ExternalPort: r.ExternalPort,
+				InternalIP:   r.InternalIP,
+				InternalPort: r.InternalPort,
+			}
+		}
+
+		// Add DNAT sessions
+		dnatSessions := engine.GetDNATSessions()
+		resp.DNATSessions = make([]ipc.DNATSessionInfo, len(dnatSessions))
+		for i, s := range dnatSessions {
+			resp.DNATSessions[i] = ipc.DNATSessionInfo{
+				Protocol:     s.Protocol,
+				ExternalIP:   s.ExternalIP,
+				ExternalPort: s.ExternalPort,
+				InternalIP:   s.InternalIP,
+				InternalPort: s.InternalPort,
+				NATPort:      s.NATPort,
+				IdleSeconds:  s.IdleSeconds,
+			}
+		}
+
 		return resp
 	})
 
@@ -424,14 +454,55 @@ func runStatusCommand() {
 	fmt.Printf("Dropped:          %d\n", status.PacketsDropped)
 	fmt.Printf("Errors Recovered: %d\n\n", status.ErrorsRecovered)
 
-	fmt.Printf("Connection Table\n")
-	fmt.Printf("----------------\n")
+	fmt.Printf("Connection Table (SNAT)\n")
+	fmt.Printf("-----------------------\n")
 	fmt.Printf("Active:           %d\n", status.ActiveConns)
 	fmt.Printf("Total:            %d\n\n", status.TotalConns)
 
+	// Port Forwarding Rules
+	if len(status.PortForwards) > 0 {
+		fmt.Printf("Port Forwarding Rules (DNAT)\n")
+		fmt.Printf("----------------------------\n")
+		fmt.Printf("%-20s %-8s %-12s %-21s\n", "Name", "Proto", "Ext Port", "Internal")
+		for _, pf := range status.PortForwards {
+			internal := fmt.Sprintf("%s:%d", pf.InternalIP, pf.InternalPort)
+			fmt.Printf("%-20s %-8s %-12d %-21s\n",
+				truncateStr(pf.Name, 20), strings.ToUpper(pf.Protocol), pf.ExternalPort, internal)
+		}
+		fmt.Println()
+	}
+
+	// DNAT Sessions
+	if len(status.DNATSessions) > 0 || status.ActiveDNATConns > 0 {
+		fmt.Printf("Active DNAT Sessions: %d\n", status.ActiveDNATConns)
+		fmt.Printf("---------------------\n")
+		if len(status.DNATSessions) > 0 {
+			fmt.Printf("%-6s %-21s %-8s %-21s %s\n",
+				"Proto", "External Client", "NAT Port", "Internal Target", "Idle")
+
+			shown := 0
+			for _, sess := range status.DNATSessions {
+				if shown >= 20 {
+					fmt.Printf("... and %d more\n", len(status.DNATSessions)-20)
+					break
+				}
+
+				external := fmt.Sprintf("%s:%d", sess.ExternalIP, sess.ExternalPort)
+				internal := fmt.Sprintf("%s:%d", sess.InternalIP, sess.InternalPort)
+				idle := formatSeconds(sess.IdleSeconds)
+
+				fmt.Printf("%-6s %-21s %-8d %-21s %s\n",
+					sess.Protocol, external, sess.NATPort, internal, idle)
+				shown++
+			}
+		}
+		fmt.Println()
+	}
+
+	// SNAT Connections
 	if len(status.Connections) > 0 {
-		fmt.Printf("Active Connections (showing up to 20)\n")
-		fmt.Printf("-------------------------------------\n")
+		fmt.Printf("Active SNAT Connections (showing up to 20)\n")
+		fmt.Printf("------------------------------------------\n")
 		fmt.Printf("%-6s %-21s %-21s %-8s %-12s %s\n",
 			"Proto", "Internal", "External", "NAT Port", "State", "Idle")
 
@@ -451,6 +522,17 @@ func runStatusCommand() {
 			shown++
 		}
 	}
+}
+
+// truncateStr truncates a string to maxLen characters, adding "..." if needed.
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	if maxLen <= 3 {
+		return s[:maxLen]
+	}
+	return s[:maxLen-3] + "..."
 }
 
 func formatDuration(d time.Duration) string {

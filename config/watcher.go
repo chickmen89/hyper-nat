@@ -111,7 +111,11 @@ func (w *Watcher) checkForChanges() {
 
 	// Apply new configuration
 	if w.onChange != nil {
-		w.onChange(cfg)
+		if err := w.onChange(cfg); err != nil {
+			w.logger.Printf("[WARN] [CONFIG] Failed to apply new configuration: %v", err)
+			return
+		}
+		w.logger.Printf("[INFO] [CONFIG] Configuration reloaded successfully")
 	}
 }
 

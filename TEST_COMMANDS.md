@@ -77,9 +77,10 @@ taskkill /F /IM hyper-nat.exe
 
 | 기능 | 테스트 항목 | 결과 |
 |------|-------------|------|
-| P0-1 | 에러 복구 로직 | ⚠️ Recv 에러 재시도만 지원, 드라이버 재연결 미지원 |
-| P0-2 | TCP 타임아웃 | ⚠️ 클린업 루프 동작 확인 필요 |
-| P1-3 | status 명령 | ✅ 정상 작동 |
-| P1-4 | 핫 리로드 | ⚠️ 리로드 로그 미출력, 추가 확인 필요 |
+| P0-1 | 에러 복구 로직 | ✅ 지수 백오프 재시도 구현 완료 |
+| P0-2 | TCP 타임아웃 | ✅ half-open 60초, ESTABLISHED 2시간 타임아웃 구현 |
+| P1-3 | status 명령 | ✅ SNAT/DNAT 정보 모두 표시 |
+| P1-4 | 핫 리로드 | ✅ "[INFO] [CONFIG] Configuration reloaded successfully" 로그 출력 |
+| P1-5 | DNAT (Port Forwarding) | ✅ Phase 1 구현 완료, status에서 표시 |
 | 기본 | 인터넷 NAT | ✅ 정상 작동 (NATted 카운트 증가) |
 | 기본 | 호스트 네트워크 bypass | ✅ 정상 작동 (Bypassed 카운트 증가) |
