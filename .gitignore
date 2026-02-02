@@ -1,0 +1,18 @@
+﻿# Windows reserved names
+nul
+
+# Build artifacts
+*.exe
+*.dll
+*.sys
+
+# Logs
+*.log
+logs/
+
+# IDE
+.idea/
+.vscode/
+
+# Local config
+.claude/

@@ -1,0 +1,43 @@
+# Hyper-NAT 설정 파일
+# NAT에 사용할 외부 IP (Hyper-V 호스트 IP)
+nat_ip: 192.168.45.57
+
+# 내부 네트워크 대역 (VM들이 사용하는 대역)
+internal_network: 172.17.240.0/24
+
+# 호스트의 내부 인터페이스 IP (NAT 대상에서 제외)
+host_internal_ip: 172.17.240.1
+
+# 규칙 (위에서부터 순서대로 매칭, 첫 매칭 적용)
+rules:
+  # 내부 네트워크로 가는 트래픽은 NAT 제외 (VM <-> 호스트 통신)
+  - name: "내부 네트워크"
+    destination: 172.17.240.0/24
+    action: bypass
+
+  # 라우터로 가는 트래픽은 NAT 적용 (인터넷 게이트웨이)
+  - name: "라우터"
+    destination: 192.168.45.1/32
+    action: nat
+
+  # 호스트 네트워크로 가는 트래픽은 NAT 제외 (소스 IP 유지)
+  - name: "호스트 네트워크"
+    destination: 192.168.45.0/24
+    action: bypass
+
+  # TailScale 서브넷 라우팅 대역 (TailScale IP로 NAT)
+  - name: "TailScale 서브넷"
+    destination: 172.16.0.0/21
+    action: nat
+    nat_ip: 100.119.83.34  # guu-pc의 TailScale IP
+
+  # TailScale 내부 대역 (TailScale IP로 NAT)
+  - name: "TailScale CGNAT"
+    destination: 100.64.0.0/10
+    action: nat
+    nat_ip: 100.119.83.34  # guu-pc의 TailScale IP
+
+  # 그 외 모든 트래픽은 NAT 적용
+  - name: "인터넷"
+    destination: 0.0.0.0/0
+    action: nat
