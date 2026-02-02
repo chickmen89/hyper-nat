@@ -9,8 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.3.0] - 2026-02-02
 
 ### Added
+- 포트 포워딩 (DNAT) 지원
+  - 외부 포트를 내부 VM의 IP/포트로 매핑
+  - `port_forward` 설정 섹션 추가
 - CLI 상태 조회 명령 (`hyper-nat status`)
-  - 실시간 연결 테이블 조회
+  - 실시간 연결 테이블 조회 (SNAT/DNAT 모두 지원)
   - 패킷 통계 표시
   - IPC 서버 (TCP 포트 47847)
 - 설정 파일 핫 리로드

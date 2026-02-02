@@ -95,6 +95,14 @@ rules:
   - name: "인터넷"
     destination: 0.0.0.0/0
     action: nat
+
+# 포트 포워딩 설정 (DNAT, 선택사항)
+port_forward:
+  - name: "Web Server"
+    protocol: "tcp"
+    external_port: 8080
+    internal_ip: 172.17.240.21
+    internal_port: 80
 ```
 
 ### 설정 항목 설명
@@ -105,6 +113,7 @@ rules:
 | `internal_network` | O | NAT를 적용할 내부 네트워크 대역 (CIDR) |
 | `host_internal_ip` | X | 호스트의 내부 인터페이스 IP. 설정 시 해당 IP에서 나가는 트래픽은 NAT 제외 |
 | `rules` | O | 목적지별 NAT 규칙 목록 |
+| `port_forward` | X | 외부에서 내부 VM으로의 접근을 위한 포트 포워딩 규칙 목록 |
 
 ### 규칙 작성 방법
 
@@ -167,6 +176,67 @@ cd C:\path\to\hyper-nat
 
 # 버전 확인
 .\hyper-nat.exe -version
+```
+
+### 상태 확인 (상태 조회)
+
+프로그램이 실행 중일 때(또는 서비스로 동작 중일 때) 별도의 터미널에서 현재 상태를 조회할 수 있습니다:
+
+```powershell
+.\hyper-nat.exe status
+```
+
+**출력 예시:**
+```
+Hyper-NAT Status
+================
+
+Status:           Running
+Uptime:           18m 2s
+NAT IP:           192.168.45.57
+Internal Network: 172.17.240.0/24
+
+Packet Statistics
+-----------------
+Processed:        25025
+NATted:           258
+Bypassed:         0
+Dropped:          0
+Errors Recovered: 0
+
+Connection Table (SNAT)
+-----------------------
+Active:           4
+Total:            69
+
+Port Forwarding Rules (DNAT)
+----------------------------
+Name                 Proto    Ext Port     Internal             
+Web Server           TCP      8080         172.17.240.21:80     
+
+Active SNAT Connections (showing up to 20)
+------------------------------------------
+Proto  Internal              External              NAT Port State        Idle
+TCP    172.17.240.21:49806   172.18.240.10:3128    40066    SYN_SENT     39s
+TCP    172.17.240.21:52590   172.18.240.10:3128    40068    SYN_SENT     9s
+```
+
+### 서비스 관리
+
+Hyper-NAT은 Windows 서비스로 등록하여 백그라운드에서 실행할 수 있습니다:
+
+```powershell
+# 서비스 설치 (관리자 권한 필수, 절대 경로 사용 권장)
+.\hyper-nat.exe install -config C:\hyper-nat\configs\hyper-nat.yaml -logfile C:\hyper-nat\logs\hyper-nat.log
+
+# 서비스 시작
+.\hyper-nat.exe start
+
+# 서비스 중지
+.\hyper-nat.exe stop
+
+# 서비스 제거
+.\hyper-nat.exe uninstall
 ```
 
 ### 종료
@@ -342,7 +412,6 @@ go test ./config/... ./nat/...
 
 - IPv4만 지원
 - TCP/UDP/ICMP 지원 (ICMP는 Echo Request/Reply만)
-- 단일 NAT IP만 지원
 - NAT 포트/ID 범위: 40000-60000 (20,000개)
 
 ---
