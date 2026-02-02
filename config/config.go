@@ -28,15 +28,26 @@ type Rule struct {
 	NATIPStr    string     `yaml:"nat_ip,omitempty"` // Optional per-rule NAT IP
 }
 
+// PortForward defines a port forwarding (DNAT) rule.
+type PortForward struct {
+	Name            string `yaml:"name"`
+	Protocol        string `yaml:"protocol"`      // "tcp" or "udp"
+	ExternalPort    uint16 `yaml:"external_port"` // Port on NAT IP
+	InternalIP      net.IP `yaml:"-"`
+	InternalIPStr   string `yaml:"internal_ip"`
+	InternalPort    uint16 `yaml:"internal_port,omitempty"` // Defaults to external_port if omitted
+}
+
 // Config holds the complete configuration for Hyper-NAT.
 type Config struct {
-	NATIP              net.IP     `yaml:"-"`
-	NATIPStr           string     `yaml:"nat_ip"`
-	InternalNetwork    *net.IPNet `yaml:"-"`
-	InternalNetworkStr string     `yaml:"internal_network"`
-	HostInternalIP     net.IP     `yaml:"-"`
-	HostInternalIPStr  string     `yaml:"host_internal_ip"`
-	Rules              []Rule     `yaml:"rules"`
+	NATIP              net.IP        `yaml:"-"`
+	NATIPStr           string        `yaml:"nat_ip"`
+	InternalNetwork    *net.IPNet    `yaml:"-"`
+	InternalNetworkStr string        `yaml:"internal_network"`
+	HostInternalIP     net.IP        `yaml:"-"`
+	HostInternalIPStr  string        `yaml:"host_internal_ip"`
+	Rules              []Rule        `yaml:"rules"`
+	PortForwards       []PortForward `yaml:"port_forward,omitempty"`
 }
 
 // Load reads and parses a configuration file from the given path.
@@ -113,6 +124,37 @@ func Parse(data []byte) (*Config, error) {
 				return nil, fmt.Errorf("rule %q: nat_ip must be IPv4: %s", rule.Name, rule.NATIPStr)
 			}
 			rule.NATIP = rule.NATIP.To4()
+		}
+	}
+
+	// Parse port forwarding rules
+	for i := range cfg.PortForwards {
+		pf := &cfg.PortForwards[i]
+
+		// Validate protocol
+		pf.Protocol = strings.ToLower(pf.Protocol)
+		if pf.Protocol != "tcp" && pf.Protocol != "udp" {
+			return nil, fmt.Errorf("port_forward %q: invalid protocol %q (must be 'tcp' or 'udp')", pf.Name, pf.Protocol)
+		}
+
+		// Validate external port
+		if pf.ExternalPort == 0 {
+			return nil, fmt.Errorf("port_forward %q: external_port is required", pf.Name)
+		}
+
+		// Parse internal IP
+		pf.InternalIP = net.ParseIP(pf.InternalIPStr)
+		if pf.InternalIP == nil {
+			return nil, fmt.Errorf("port_forward %q: invalid internal_ip %q", pf.Name, pf.InternalIPStr)
+		}
+		if pf.InternalIP.To4() == nil {
+			return nil, fmt.Errorf("port_forward %q: internal_ip must be IPv4: %s", pf.Name, pf.InternalIPStr)
+		}
+		pf.InternalIP = pf.InternalIP.To4()
+
+		// Default internal port to external port if not specified
+		if pf.InternalPort == 0 {
+			pf.InternalPort = pf.ExternalPort
 		}
 	}
 
@@ -240,6 +282,7 @@ func (c *Config) BuildTripleFilters() (outboundFilter, inboundFilter, icmpOutbou
 	// Captures packets destined for any NAT IP:
 	// - TCP/UDP on NAT port range (40000-60000)
 	// - ICMP Echo Reply (type 0) for ping responses
+	// - Port forwarding target ports
 	// Must also be inbound (!outbound) to avoid capturing outgoing packets
 	var inboundParts []string
 	for _, ip := range natIPs {
@@ -248,6 +291,22 @@ func (c *Config) BuildTripleFilters() (outboundFilter, inboundFilter, icmpOutbou
 			ip.String(),
 		))
 	}
+
+	// Add port forwarding rules to inbound filter
+	for _, pf := range c.PortForwards {
+		if pf.Protocol == "tcp" {
+			inboundParts = append(inboundParts, fmt.Sprintf(
+				"(ip.DstAddr == %s and tcp.DstPort == %d)",
+				c.NATIP.String(), pf.ExternalPort,
+			))
+		} else if pf.Protocol == "udp" {
+			inboundParts = append(inboundParts, fmt.Sprintf(
+				"(ip.DstAddr == %s and udp.DstPort == %d)",
+				c.NATIP.String(), pf.ExternalPort,
+			))
+		}
+	}
+
 	inboundFilter = "!outbound and (" + strings.Join(inboundParts, " or ") + ")"
 
 	// ICMP outbound filter for LayerNetworkForward

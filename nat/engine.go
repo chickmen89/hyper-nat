@@ -17,6 +17,7 @@ import (
 type Engine struct {
 	cfg            *config.Config
 	table          *ConnTrackTable
+	dnatTable      *DNATTable // DNAT (port forwarding) table
 	matcher        *RuleMatcher
 	outboundHandle *windivert.Handle // LayerNetworkForward for outbound TCP/UDP (VM -> Internet)
 	inboundHandle  *windivert.Handle // LayerNetwork for inbound (Internet -> NAT IP)
@@ -107,9 +108,13 @@ func WithRetryDelay(base, max time.Duration) EngineOption {
 
 // NewEngine creates a new NAT engine.
 func NewEngine(cfg *config.Config, opts ...EngineOption) *Engine {
+	dnat := NewDNATTable()
+	dnat.LoadRules(cfg.PortForwards)
+
 	e := &Engine{
 		cfg:                   cfg,
 		table:                 NewConnTrackTable(),
+		dnatTable:             dnat,
 		matcher:               NewRuleMatcher(cfg),
 		tcpTimeout:            5 * time.Minute,
 		udpTimeout:            30 * time.Second,
@@ -192,6 +197,15 @@ func (e *Engine) Start(ctx context.Context) error {
 	if len(e.allNATIPs) > 1 {
 		for i, ip := range e.allNATIPs {
 			e.logger.Printf("[INFO] [ENGINE]   NAT IP %d: %s", i+1, ip)
+		}
+	}
+
+	// Log port forwarding rules
+	if len(e.cfg.PortForwards) > 0 {
+		e.logger.Printf("[INFO] [ENGINE] Port forwarding rules:")
+		for _, pf := range e.cfg.PortForwards {
+			e.logger.Printf("[INFO] [ENGINE]   %s: %s/%d -> %s:%d",
+				pf.Name, pf.Protocol, pf.ExternalPort, pf.InternalIP, pf.InternalPort)
 		}
 	}
 
@@ -613,7 +627,35 @@ func (e *Engine) processInboundPacket(divertPkt *windivert.Packet) error {
 
 func (e *Engine) processOutbound(pkt *packet.ParsedPacket, divertPkt *windivert.Packet) error {
 	destIP := pkt.IPv4.DstIP
+	proto := pkt.IPv4.Protocol
+	srcIP := pkt.IPv4.SrcIP
 
+	// 1. Check if this is a response for an active DNAT session
+	if pkt.ICMP == nil {
+		srcPort := pkt.SrcPort()
+		dstPort := pkt.DstPort()
+		session := e.dnatTable.LookupSession(proto, srcIP, srcPort, destIP, dstPort)
+		if session != nil {
+			e.dnatTable.TouchSession(session)
+
+			// Apply Source NAT to translate internal server back to external NAT port
+			pkt.ApplyNAT(e.cfg.NATIP, session.NATPort)
+
+			if e.verbose {
+				e.logger.Printf("[DEBUG] [DNAT] Outbound %s %s:%d → %s:%d (mapped back to :%d)",
+					protoName(proto), srcIP, srcPort, destIP, dstPort, session.NATPort)
+			}
+
+			// Recalculate checksums
+			pkt.ClearChecksums()
+			windivert.CalcChecksums(pkt.Raw, &divertPkt.Address, 0)
+
+			divertPkt.Data = pkt.Raw
+			return e.sendOutbound(divertPkt)
+		}
+	}
+
+	// 2. Original SNAT logic
 	// Check rules
 	result := e.matcher.Match(destIP)
 
@@ -729,25 +771,68 @@ func (e *Engine) processInbound(pkt *packet.ParsedPacket, divertPkt *windivert.P
 		srcPort = pkt.SrcPort() // External source port
 	}
 
-	// Reverse lookup
+	// 1. Check SNAT table (Reverse lookup)
 	entry := e.table.LookupReverse(proto, natID, srcIP, srcPort)
-	if entry == nil {
-		// No entry - this is traffic to NAT IP that wasn't NAT'd by us
-		// (e.g., host's own traffic). Forward as-is silently.
-		return e.sendInbound(divertPkt)
+	if entry != nil {
+		// Update TCP state if applicable
+		if pkt.TCP != nil {
+			e.updateTCPState(entry, pkt.TCP, false)
+		}
+
+		// Touch entry
+		e.table.Touch(entry)
+
+		// Reverse NAT - change destination from NAT IP to internal VM IP
+		pkt.ReverseNAT(entry.InternalIP, entry.InternalPort)
+
+		if e.verbose {
+			if pkt.ICMP != nil {
+				e.logger.Printf("[DEBUG] [NAT] Reverse %s %s → %s (NAT ID:%d → ID:%d)",
+					protoName(proto), srcIP, pkt.IPv4.DstIP,
+					natID, entry.InternalPort)
+			} else {
+				e.logger.Printf("[DEBUG] [NAT] Reverse %s %s:%d → %s:%d (entry: %s:%d, NAT port: %d)",
+					protoName(proto), srcIP, srcPort, pkt.IPv4.DstIP, pkt.DstPort(),
+					entry.InternalIP, entry.InternalPort, entry.NATPort)
+			}
+		}
+	} else {
+		// 2. Check DNAT table (Port Forwarding)
+		// Currently only TCP/UDP DNAT is supported
+		if pkt.ICMP == nil {
+			// Check for existing DNAT session
+			session := e.dnatTable.LookupSessionInbound(proto, natID, srcIP, srcPort)
+			if session == nil {
+				// No existing session, check rules
+				rule := e.dnatTable.LookupRuleByProto(proto, natID)
+				if rule != nil {
+					// Found a rule! Create session
+					session = e.dnatTable.CreateSession(proto, srcIP, srcPort, rule.InternalIP, rule.InternalPort, natID)
+					e.logger.Printf("[INFO] [DNAT] New %s connection %s:%d → %s:%d (forwarded to %s:%d)",
+						protoName(proto), srcIP, srcPort, pkt.IPv4.DstIP, natID,
+						rule.InternalIP, rule.InternalPort)
+				}
+			}
+
+			if session != nil {
+				e.dnatTable.TouchSession(session)
+
+				// Apply DNAT - change destination to internal VM
+				pkt.ReverseNAT(session.InternalIP, session.InternalPort)
+
+				if e.verbose {
+					e.logger.Printf("[DEBUG] [DNAT] Inbound %s %s:%d → %s:%d (to %s:%d)",
+						protoName(proto), srcIP, srcPort, pkt.IPv4.DstIP, natID,
+						session.InternalIP, session.InternalPort)
+				}
+			} else {
+				// No entry and no rule - this is traffic to NAT IP that wasn't NAT'd by us
+				return e.sendInbound(divertPkt)
+			}
+		} else {
+			return e.sendInbound(divertPkt)
+		}
 	}
-
-	// Update TCP state if applicable
-	if pkt.TCP != nil {
-		e.updateTCPState(entry, pkt.TCP, false)
-	}
-
-	// Touch entry
-	e.table.Touch(entry)
-
-	// Reverse NAT - change destination from NAT IP to internal VM IP
-	// For ICMP, InternalPort is the original ICMP Identifier
-	pkt.ReverseNAT(entry.InternalIP, entry.InternalPort)
 
 	// Recalculate checksums
 	pkt.ClearChecksums()
@@ -755,26 +840,12 @@ func (e *Engine) processInbound(pkt *packet.ParsedPacket, divertPkt *windivert.P
 
 	divertPkt.Data = pkt.Raw
 
-	// After reverse NAT, the packet's destination is now the internal VM IP.
+	// After translation, the packet's destination is now the internal VM IP.
 	// We need to re-inject this packet so it gets routed to the VM.
 	// Set Outbound flag to indicate this packet should be sent out (to VM).
 	divertPkt.Address.Outbound = 1
 
-	if e.verbose {
-		if pkt.ICMP != nil {
-			e.logger.Printf("[DEBUG] [NAT] Reverse %s %s → %s (NAT ID:%d → ID:%d)",
-				protoName(proto), srcIP, pkt.IPv4.DstIP,
-				natID, entry.InternalPort)
-		} else {
-			e.logger.Printf("[DEBUG] [NAT] Reverse %s %s:%d → %s:%d (entry: %s:%d, NAT port: %d)",
-				protoName(proto), srcIP, srcPort, pkt.IPv4.DstIP, pkt.DstPort(),
-				entry.InternalIP, entry.InternalPort, entry.NATPort)
-		}
-	}
-
 	// Send via inbound handle (LayerNetwork) with Outbound=1 to route to VM
-	// Using LayerNetwork because the packet needs to be re-routed by Windows
-	// networking stack to reach the VM
 	return e.sendInbound(divertPkt)
 }
 
@@ -873,8 +944,10 @@ func (e *Engine) cleanupLoop(ctx context.Context) {
 				e.icmpTimeout,
 				e.tcpEstablishedTimeout,
 			)
-			if cleaned > 0 {
-				e.logger.Printf("[INFO] [TABLE] Cleaned %d expired entries, %d remaining", cleaned, e.table.Count())
+			dnatCleaned := e.dnatTable.CleanupExpiredSessions(e.tcpTimeout, e.udpTimeout)
+			if cleaned > 0 || dnatCleaned > 0 {
+				e.logger.Printf("[INFO] [TABLE] Cleaned %d expired entries (%d DNAT), %d SNAT remaining, %d DNAT remaining",
+					cleaned+dnatCleaned, dnatCleaned, e.table.Count(), e.dnatTable.SessionCount())
 			} else if e.verbose {
 				e.logger.Printf("[DEBUG] [TABLE] Cleanup finished, nothing to clean (%d active)", e.table.Count())
 			}
@@ -956,6 +1029,9 @@ func (e *Engine) UpdateRules(cfg *config.Config) error {
 	e.matcher = newMatcher
 	e.allNATIPs = newNATIPs
 	e.cfg = cfg
+
+	// Update DNAT rules
+	e.dnatTable.LoadRules(cfg.PortForwards)
 
 	e.logger.Printf("[INFO] [ENGINE] Rules hot-reloaded successfully")
 	for i, rule := range cfg.Rules {
